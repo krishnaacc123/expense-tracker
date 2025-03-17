@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { format, startOfMonth } from 'date-fns';
 import { Save } from 'lucide-react';
+import LoadingSpinner from './LoadingSpinner';
 
 interface Category {
   id: string;
@@ -24,26 +24,35 @@ const formatINR = (amount: number) => {
 
 export default function BudgetManager({ categories }: { categories: Category[] }) {
   const [budgets, setBudgets] = useState<Record<string, number>>({});
-  const [month, setMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchBudgets();
-  }, [month]);
+  }, []);
 
   const fetchBudgets = async () => {
-    const startDate = format(startOfMonth(new Date(month)), 'yyyy-MM-dd');
-    
-    const { data, error } = await supabase
-      .from('category_budgets')
-      .select('category_id, amount')
-      .eq('month', startDate);
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('budgets')
+        .select('category_id, amount');
 
-    if (!error && data) {
-      const budgetMap = data.reduce((acc: Record<string, number>, budget) => {
-        acc[budget.category_id] = budget.amount;
-        return acc;
-      }, {});
-      setBudgets(budgetMap);
+      if (error) throw error;
+
+      if (data) {
+        const budgetMap = data.reduce((acc: Record<string, number>, budget) => {
+          acc[budget.category_id] = budget.amount;
+          return acc;
+        }, {});
+        setBudgets(budgetMap);
+      }
+    } catch (err) {
+      console.error('Error fetching budgets:', err);
+      setError('Failed to load budgets. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -55,50 +64,83 @@ export default function BudgetManager({ categories }: { categories: Category[] }
   };
 
   const handleSaveBudgets = async () => {
-    const startDate = format(startOfMonth(new Date(month)), 'yyyy-MM-dd');
-    
-    // Delete existing budgets for the month
-    await supabase
-      .from('category_budgets')
-      .delete()
-      .eq('month', startDate);
+    try {
+      setSaving(true);
+      setError('');
 
-    // Insert new budgets
-    const budgetsToInsert = Object.entries(budgets).map(([category_id, amount]) => ({
-      category_id,
-      amount,
-      month: startDate
-    }));
+      // Get user ID
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) {
+        throw new Error('User not authenticated');
+      }
 
-    const { error } = await supabase
-      .from('category_budgets')
-      .insert(budgetsToInsert);
+      // Delete existing budgets for the current user
+      const { error: deleteError } = await supabase
+        .from('budgets')
+        .delete()
+        .eq('user_id', user.id);
 
-    if (!error) {
-      fetchBudgets();
+      if (deleteError) throw deleteError;
+
+      // Insert new budgets
+      const budgetsToInsert = Object.entries(budgets)
+        .filter(([_, amount]) => amount > 0) // Only insert budgets with positive amounts
+        .map(([category_id, amount]) => ({
+          category_id,
+          amount,
+          user_id: user.id
+        }));
+
+      if (budgetsToInsert.length > 0) {
+        const { error: insertError } = await supabase
+          .from('budgets')
+          .insert(budgetsToInsert);
+
+        if (insertError) throw insertError;
+      }
+
+      await fetchBudgets();
+    } catch (err) {
+      console.error('Error saving budgets:', err);
+      setError('Failed to save budgets. Please try again.');
+    } finally {
+      setSaving(false);
     }
   };
+
+  if (loading && Object.keys(budgets).length === 0) {
+    return (
+      <div className="bg-white shadow rounded-lg">
+        <div className="flex justify-center items-center min-h-[400px]">
+          <LoadingSpinner size="lg" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white shadow rounded-lg p-6">
       <div className="flex justify-between items-center mb-6">
-        <h2 className="text-lg font-medium text-gray-900">Monthly Budgets</h2>
-        <div className="flex items-center space-x-4">
-          <input
-            type="month"
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-            className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-          />
-          <button
-            onClick={handleSaveBudgets}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
-          >
-            <Save className="h-4 w-4 mr-2" />
-            Save Budgets
-          </button>
-        </div>
+        <h2 className="text-lg font-medium text-gray-900">Category Budgets</h2>
+        <button
+          onClick={handleSaveBudgets}
+          disabled={saving}
+          className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white ${
+            saving 
+              ? 'bg-indigo-400 cursor-not-allowed' 
+              : 'bg-indigo-600 hover:bg-indigo-700'
+          }`}
+        >
+          <Save className="h-4 w-4 mr-2" />
+          {saving ? 'Saving...' : 'Save Budgets'}
+        </button>
       </div>
+
+      {error && (
+        <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+          {error}
+        </div>
+      )}
 
       <div className="space-y-4">
         {categories.map((category) => (

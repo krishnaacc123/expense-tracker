@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { format, startOfMonth } from 'date-fns';
 import { Filter, Calendar, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import LoadingSpinner from './LoadingSpinner';
 
 interface Category {
   id: string;
   name: string;
-  icon: string;
 }
 
 interface Expense {
@@ -15,14 +15,15 @@ interface Expense {
   description: string;
   date: string;
   category_id: string;
-  category: Category;
-  is_deleted?: boolean;
+  is_deleted: boolean;
+  category: {
+    id: string;
+    name: string;
+    icon: string;
+  };
 }
 
-interface Budget {
-  category_id: string;
-  amount: number;
-}
+const ITEMS_PER_PAGE = 10;
 
 const formatINR = (amount: number) => {
   return new Intl.NumberFormat('en-IN', {
@@ -31,8 +32,6 @@ const formatINR = (amount: number) => {
     maximumFractionDigits: 2
   }).format(amount);
 };
-
-const ITEMS_PER_PAGE = 10;
 
 export default function ExpenseList({ categories }: { categories: Category[] }) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -43,70 +42,61 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
     fetchExpenses();
-    fetchBudgets();
   }, [startDate, endDate, selectedCategory, currentPage]);
 
-  const fetchBudgets = async () => {
-    const currentMonth = format(new Date(startDate), 'yyyy-MM-dd');
-    
-    const { data, error } = await supabase
-      .from('category_budgets')
-      .select('category_id, amount')
-      .eq('month', currentMonth);
-
-    if (!error && data) {
-      const budgetMap = data.reduce((acc: Record<string, number>, budget) => {
-        acc[budget.category_id] = budget.amount;
-        return acc;
-      }, {});
-      setBudgets(budgetMap);
-    }
-  };
-
   const fetchExpenses = async () => {
-    let query = supabase
-      .from('expenses')
-      .select(`
-        *,
-        category:categories(*)
-      `, { count: 'exact' })
-      .gte('date', startDate)
-      .lte('date', endDate)
-      .order('date', { ascending: false });
+    try {
+      setLoading(true);
+      let query = supabase
+        .from('expenses')
+        .select(`
+          *,
+          category:categories(*)
+        `, { count: 'exact' })
+        .gte('date', startDate)
+        .lte('date', endDate)
+        .order('date', { ascending: false });
 
-    if (selectedCategory !== 'all') {
-      query = query.eq('category_id', selectedCategory);
-    }
-
-    // Add pagination
-    const from = (currentPage - 1) * ITEMS_PER_PAGE;
-    const to = from + ITEMS_PER_PAGE - 1;
-    
-    const { data, error, count } = await query.range(from, to);
-
-    if (!error && data) {
-      setExpenses(data);
-      if (count) {
-        setTotalPages(Math.ceil(count / ITEMS_PER_PAGE));
+      if (selectedCategory !== 'all') {
+        query = query.eq('category_id', selectedCategory);
       }
 
-      // Calculate category totals
-      const totals = data.reduce((acc: Record<string, number>, expense) => {
-        if (!expense.is_deleted) {
-          acc[expense.category_id] = (acc[expense.category_id] || 0) + expense.amount;
+      const from = (currentPage - 1) * ITEMS_PER_PAGE;
+      const to = from + ITEMS_PER_PAGE - 1;
+      
+      const { data, error, count } = await query.range(from, to);
+
+      if (error) throw error;
+
+      if (data) {
+        setExpenses(data);
+        if (count) {
+          setTotalPages(Math.ceil(count / ITEMS_PER_PAGE));
         }
-        return acc;
-      }, {});
-      setCategoryTotals(totals);
+
+        const totals = data.reduce((acc: Record<string, number>, expense) => {
+          if (!expense.is_deleted) {
+            acc[expense.category_id] = (acc[expense.category_id] || 0) + expense.amount;
+          }
+          return acc;
+        }, {});
+        setCategoryTotals(totals);
+      }
+    } catch (err) {
+      console.error('Error fetching expenses:', err);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleDelete = async (expense: Expense) => {
     try {
-      // Soft delete the expense
+      setDeleting(expense.id);
       const { error: updateError } = await supabase
         .from('expenses')
         .update({
@@ -117,7 +107,6 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
 
       if (updateError) throw updateError;
 
-      // Log the activity
       const { error: logError } = await supabase
         .from('activity_logs')
         .insert({
@@ -133,14 +122,15 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
 
       if (logError) throw logError;
 
-      // Update UI
       setExpenses(prevExpenses =>
         prevExpenses.map(e =>
           e.id === expense.id ? { ...e, is_deleted: true } : e
         )
       );
-    } catch (error) {
-      console.error('Error deleting expense:', error);
+    } catch (err) {
+      console.error('Error deleting expense:', err);
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -150,59 +140,58 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
     return budget && total > budget;
   };
 
-  const totalAmount = expenses
-    .filter(expense => !expense.is_deleted)
-    .reduce((sum, expense) => sum + expense.amount, 0);
+  if (loading && expenses.length === 0) {
+    return (
+      <div className="bg-white shadow rounded-lg p-6">
+        <div className="flex justify-center items-center min-h-[400px]">
+          <LoadingSpinner size="lg" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white shadow rounded-lg">
       <div className="p-6 border-b border-gray-200">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-          <div className="flex items-center space-x-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Start Date</label>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-lg font-medium text-gray-900 mb-4 sm:mb-0">Expenses</h2>
+          <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+            <div className="flex items-center space-x-2">
+              <Calendar className="h-5 w-5 text-gray-400" />
               <input
                 type="date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
-                className="mt-1 block rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">End Date</label>
+              <span className="text-gray-500">to</span>
               <input
                 type="date"
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
-                className="mt-1 block rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               />
             </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Category</label>
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
-              className="mt-1 block rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-            >
-              <option value="all">All Categories</option>
-              {categories.map((category) => (
-                <option key={category.id} value={category.id}>
-                  {category.name}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center space-x-2">
+              <Filter className="h-5 w-5 text-gray-400" />
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+              >
+                <option value="all">All Categories</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
 
       <div className="p-6">
-        <div className="mb-6">
-          <h3 className="text-lg font-medium text-gray-900">
-            Total: {formatINR(totalAmount)}
-          </h3>
-        </div>
-
         <div className="space-y-2">
           {expenses.map((expense) => (
             <div
@@ -215,38 +204,34 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
                     : 'bg-gray-50'
               }`}
             >
-              <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-4">
                 <div className="bg-indigo-100 p-2 rounded-full">
                   <span className="text-indigo-600">{expense.category.icon}</span>
                 </div>
                 <div>
-                  <p className="font-medium text-gray-900">{expense.description || 'No description'}</p>
-                  <p className="text-xs text-gray-500">{expense.category.name}</p>
-                  {isOverBudget(expense) && (
-                    <p className="text-xs text-red-600">
-                      Budget exceeded: {formatINR(budgets[expense.category_id])}
-                    </p>
-                  )}
+                  <p className="font-medium text-gray-900">{formatINR(expense.amount)}</p>
+                  <p className="text-sm text-gray-500">{expense.description || 'No description'}</p>
                 </div>
               </div>
               <div className="flex items-center space-x-4">
                 <div className="text-right">
-                  <p className={`font-medium ${
-                    isOverBudget(expense) ? 'text-red-600' : 'text-gray-900'
-                  }`}>
-                    {formatINR(expense.amount)}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {format(new Date(expense.date), 'MMM d, yyyy')}
-                  </p>
+                  <p className="text-sm font-medium text-gray-900">{expense.category.name}</p>
+                  <p className="text-sm text-gray-500">{format(new Date(expense.date), 'MMM d, yyyy')}</p>
                 </div>
                 {!expense.is_deleted && (
                   <button
                     onClick={() => handleDelete(expense)}
-                    className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                    disabled={deleting === expense.id}
+                    className={`p-1 text-gray-400 hover:text-red-500 transition-colors ${
+                      deleting === expense.id ? 'cursor-not-allowed opacity-50' : ''
+                    }`}
                     title="Delete expense"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    {deleting === expense.id ? (
+                      <LoadingSpinner size="sm" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
                   </button>
                 )}
               </div>
@@ -254,28 +239,29 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
           ))}
         </div>
 
-        {/* Pagination */}
-        <div className="mt-6 flex items-center justify-between">
-          <button
-            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-            disabled={currentPage === 1}
-            className="inline-flex items-center px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white disabled:bg-gray-100 disabled:text-gray-400"
-          >
-            <ChevronLeft className="h-4 w-4 mr-1" />
-            Previous
-          </button>
-          <span className="text-sm text-gray-700">
-            Page {currentPage} of {totalPages}
-          </span>
-          <button
-            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-            disabled={currentPage === totalPages}
-            className="inline-flex items-center px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white disabled:bg-gray-100 disabled:text-gray-400"
-          >
-            Next
-            <ChevronRight className="h-4 w-4 ml-1" />
-          </button>
-        </div>
+        {totalPages > 1 && (
+          <div className="mt-6 flex items-center justify-between">
+            <button
+              onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
+              disabled={currentPage === 1}
+              className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="h-4 w-4 mr-2" />
+              Previous
+            </button>
+            <span className="text-sm text-gray-700">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
+              disabled={currentPage === totalPages}
+              className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next
+              <ChevronRight className="h-4 w-4 ml-2" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
