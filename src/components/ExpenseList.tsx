@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { format, startOfMonth } from 'date-fns';
-import { Filter, Calendar, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { format } from 'date-fns';
+import { Filter, Calendar, Trash2, ChevronLeft, ChevronRight, Receipt } from 'lucide-react';
 import LoadingSpinner from './LoadingSpinner';
 
 interface Category {
@@ -21,6 +21,11 @@ interface Expense {
     name: string;
     icon: string;
   };
+}
+
+interface Budget {
+  category_id: string;
+  amount: number;
 }
 
 const ITEMS_PER_PAGE = 10;
@@ -47,7 +52,28 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
 
   useEffect(() => {
     fetchExpenses();
+    fetchBudgets();
   }, [startDate, endDate, selectedCategory, currentPage]);
+
+  const fetchBudgets = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('budgets')
+        .select('category_id, amount');
+
+      if (error) throw error;
+
+      if (data) {
+        const budgetMap = data.reduce((acc: Record<string, number>, budget) => {
+          acc[budget.category_id] = budget.amount;
+          return acc;
+        }, {});
+        setBudgets(budgetMap);
+      }
+    } catch (err) {
+      console.error('Error fetching budgets:', err);
+    }
+  };
 
   const fetchExpenses = async () => {
     try {
@@ -79,13 +105,21 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
           setTotalPages(Math.ceil(count / ITEMS_PER_PAGE));
         }
 
-        const totals = data.reduce((acc: Record<string, number>, expense) => {
-          if (!expense.is_deleted) {
+        // Calculate category totals for the current month
+        const { data: allMonthExpenses, error: monthError } = await supabase
+          .from('expenses')
+          .select('amount, category_id')
+          .gte('date', format(new Date().setDate(1), 'yyyy-MM-dd'))
+          .lte('date', format(new Date(), 'yyyy-MM-dd'))
+          .eq('is_deleted', false);
+
+        if (!monthError && allMonthExpenses) {
+          const totals = allMonthExpenses.reduce((acc: Record<string, number>, expense) => {
             acc[expense.category_id] = (acc[expense.category_id] || 0) + expense.amount;
-          }
-          return acc;
-        }, {});
-        setCategoryTotals(totals);
+            return acc;
+          }, {});
+          setCategoryTotals(totals);
+        }
       }
     } catch (err) {
       console.error('Error fetching expenses:', err);
@@ -127,6 +161,12 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
           e.id === expense.id ? { ...e, is_deleted: true } : e
         )
       );
+
+      // Update category totals
+      setCategoryTotals(prev => ({
+        ...prev,
+        [expense.category_id]: (prev[expense.category_id] || 0) - expense.amount
+      }));
     } catch (err) {
       console.error('Error deleting expense:', err);
     } finally {
@@ -134,9 +174,9 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
     }
   };
 
-  const isOverBudget = (expense: Expense) => {
-    const budget = budgets[expense.category_id];
-    const total = categoryTotals[expense.category_id] || 0;
+  const isOverBudget = (categoryId: string) => {
+    const budget = budgets[categoryId];
+    const total = categoryTotals[categoryId] || 0;
     return budget && total > budget;
   };
 
@@ -149,6 +189,14 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
       </div>
     );
   }
+
+  const getEmptyStateMessage = () => {
+    if (selectedCategory === 'all') {
+      return 'No expenses found for the selected date range';
+    }
+    const category = categories.find(c => c.id === selectedCategory);
+    return `No expenses found in ${category?.name || 'this category'} for the selected date range`;
+  };
 
   return (
     <div className="bg-white shadow rounded-lg">
@@ -192,52 +240,64 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
       </div>
 
       <div className="p-6">
-        <div className="space-y-2">
-          {expenses.map((expense) => (
-            <div
-              key={expense.id}
-              className={`flex items-center justify-between p-3 rounded-lg ${
-                expense.is_deleted 
-                  ? 'bg-gray-100 opacity-50'
-                  : isOverBudget(expense)
-                    ? 'bg-red-50'
-                    : 'bg-gray-50'
-              }`}
-            >
-              <div className="flex items-center space-x-4">
-                <div className="bg-indigo-100 p-2 rounded-full">
-                  <span className="text-indigo-600">{expense.category.icon}</span>
-                </div>
-                <div>
-                  <p className="font-medium text-gray-900">{formatINR(expense.amount)}</p>
-                  <p className="text-sm text-gray-500">{expense.description || 'No description'}</p>
-                </div>
-              </div>
-              <div className="flex items-center space-x-4">
-                <div className="text-right">
-                  <p className="text-sm font-medium text-gray-900">{expense.category.name}</p>
-                  <p className="text-sm text-gray-500">{format(new Date(expense.date), 'MMM d, yyyy')}</p>
-                </div>
-                {!expense.is_deleted && (
-                  <button
-                    onClick={() => handleDelete(expense)}
-                    disabled={deleting === expense.id}
-                    className={`p-1 text-gray-400 hover:text-red-500 transition-colors ${
-                      deleting === expense.id ? 'cursor-not-allowed opacity-50' : ''
-                    }`}
-                    title="Delete expense"
-                  >
-                    {deleting === expense.id ? (
-                      <LoadingSpinner size="sm" />
-                    ) : (
-                      <Trash2 className="h-4 w-4" />
+        {expenses.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12">
+            <Receipt className="h-12 w-12 text-gray-400 mb-4" />
+            <p className="text-gray-500 text-lg">{getEmptyStateMessage()}</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {expenses.map((expense) => (
+              <div
+                key={expense.id}
+                className={`flex items-center justify-between p-3 rounded-lg ${
+                  expense.is_deleted 
+                    ? 'bg-gray-100 opacity-50'
+                    : isOverBudget(expense.category_id)
+                      ? 'bg-red-50'
+                      : 'bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center space-x-4">
+                  <div className="bg-indigo-100 p-2 rounded-full">
+                    <span className="text-indigo-600">{expense.category.icon}</span>
+                  </div>
+                  <div>
+                    <p className="font-medium text-gray-900">{formatINR(expense.amount)}</p>
+                    <p className="text-sm text-gray-500">{expense.description || 'No description'}</p>
+                    {isOverBudget(expense.category_id) && (
+                      <p className="text-xs text-red-600 mt-1">
+                        Budget exceeded: {formatINR(categoryTotals[expense.category_id])} / {formatINR(budgets[expense.category_id])}
+                      </p>
                     )}
-                  </button>
-                )}
+                  </div>
+                </div>
+                <div className="flex items-center space-x-4">
+                  <div className="text-right">
+                    <p className="text-sm font-medium text-gray-900">{expense.category.name}</p>
+                    <p className="text-sm text-gray-500">{format(new Date(expense.date), 'MMM d, yyyy')}</p>
+                  </div>
+                  {!expense.is_deleted && (
+                    <button
+                      onClick={() => handleDelete(expense)}
+                      disabled={deleting === expense.id}
+                      className={`p-1 text-gray-400 hover:text-red-500 transition-colors ${
+                        deleting === expense.id ? 'cursor-not-allowed opacity-50' : ''
+                      }`}
+                      title="Delete expense"
+                    >
+                      {deleting === expense.id ? (
+                        <LoadingSpinner size="sm" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
 
         {totalPages > 1 && (
           <div className="mt-6 flex items-center justify-between">
