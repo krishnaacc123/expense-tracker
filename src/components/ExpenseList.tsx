@@ -49,6 +49,8 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     fetchExpenses();
@@ -72,12 +74,15 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
       }
     } catch (err) {
       console.error('Error fetching budgets:', err);
+      setError('Failed to fetch budgets');
     }
   };
 
   const fetchExpenses = async () => {
     try {
       setLoading(true);
+      setError(null);
+      
       let query = supabase
         .from('expenses')
         .select(`
@@ -113,7 +118,9 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
           .lte('date', format(new Date(), 'yyyy-MM-dd'))
           .eq('is_deleted', false);
 
-        if (!monthError && allMonthExpenses) {
+        if (monthError) throw monthError;
+
+        if (allMonthExpenses) {
           const totals = allMonthExpenses.reduce((acc: Record<string, number>, expense) => {
             acc[expense.category_id] = (acc[expense.category_id] || 0) + expense.amount;
             return acc;
@@ -123,6 +130,7 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
       }
     } catch (err) {
       console.error('Error fetching expenses:', err);
+      setError('Failed to fetch expenses');
     } finally {
       setLoading(false);
     }
@@ -131,6 +139,12 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
   const handleDelete = async (expense: Expense) => {
     try {
       setDeleting(expense.id);
+      setError(null);
+
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) throw new Error('No authenticated user');
+
       const { error: updateError } = await supabase
         .from('expenses')
         .update({
@@ -151,7 +165,8 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
             amount: expense.amount,
             description: expense.description,
             category: expense.category.name
-          }
+          },
+          user_id: user.id
         });
 
       if (logError) throw logError;
@@ -162,13 +177,13 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
         )
       );
 
-      // Update category totals
       setCategoryTotals(prev => ({
         ...prev,
         [expense.category_id]: (prev[expense.category_id] || 0) - expense.amount
       }));
     } catch (err) {
       console.error('Error deleting expense:', err);
+      setError('Failed to delete expense');
     } finally {
       setDeleting(null);
     }
@@ -200,46 +215,64 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
 
   return (
     <div className="bg-white shadow rounded-lg">
-      <div className="p-6 border-b border-gray-200">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-lg font-medium text-gray-900 mb-4 sm:mb-0">Expenses</h2>
-          <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
-            <div className="flex items-center space-x-2">
-              <Calendar className="h-5 w-5 text-gray-400" />
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-              />
-              <span className="text-gray-500">to</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-              />
-            </div>
-            <div className="flex items-center space-x-2">
-              <Filter className="h-5 w-5 text-gray-400" />
-              <select
-                value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-                className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-              >
-                <option value="all">All Categories</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+      <div className="p-4 border-b border-gray-200">
+        <div className="flex flex-col space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium text-gray-900">Expenses</h2>
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              <Filter className="h-4 w-4 mr-2" />
+              Filters
+            </button>
           </div>
+          
+          {showFilters && (
+            <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+              <div className="flex items-center space-x-2">
+                <Calendar className="h-5 w-5 text-gray-400" />
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                />
+                <span className="text-gray-500">to</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                />
+              </div>
+              <div className="flex items-center space-x-2">
+                <Filter className="h-5 w-5 text-gray-400" />
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                >
+                  <option value="all">All Categories</option>
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="p-6">
+      <div className="p-4">
+        {error && (
+          <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+            {error}
+          </div>
+        )}
+
         {expenses.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12">
             <Receipt className="h-12 w-12 text-gray-400 mb-4" />
@@ -250,7 +283,7 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
             {expenses.map((expense) => (
               <div
                 key={expense.id}
-                className={`flex items-center justify-between p-3 rounded-lg ${
+                className={`flex items-center justify-between p-4 rounded-lg ${
                   expense.is_deleted 
                     ? 'bg-gray-100 opacity-50'
                     : isOverBudget(expense.category_id)
@@ -281,7 +314,7 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
                     <button
                       onClick={() => handleDelete(expense)}
                       disabled={deleting === expense.id}
-                      className={`p-1 text-gray-400 hover:text-red-500 transition-colors ${
+                      className={`p-2 text-gray-400 hover:text-red-500 transition-colors rounded-full hover:bg-red-50 ${
                         deleting === expense.id ? 'cursor-not-allowed opacity-50' : ''
                       }`}
                       title="Delete expense"
@@ -289,7 +322,7 @@ export default function ExpenseList({ categories }: { categories: Category[] }) 
                       {deleting === expense.id ? (
                         <LoadingSpinner size="sm" />
                       ) : (
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 className="h-5 w-5" />
                       )}
                     </button>
                   )}

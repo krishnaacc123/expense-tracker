@@ -38,20 +38,28 @@ export default function ActivityLog() {
     try {
       setLoading(true);
       const { data, error } = await supabase
-        .from('activity_log')
+        .from('activity_logs')
         .select(`
           *,
-          expense:expenses(
-            amount,
-            description,
-            category:categories(name)
-          )
+          details
         `)
-        .order('timestamp', { ascending: false });
+        .order('created_at', { ascending: false });
 
       if (error) throw error;
       if (data) {
-        setActivities(data);
+        setActivities(data.map(activity => ({
+          id: activity.id,
+          expense_id: activity.entity_id,
+          action: activity.action as 'add' | 'delete',
+          timestamp: activity.created_at,
+          expense: {
+            amount: activity.details.amount,
+            description: activity.details.description,
+            category: {
+              name: activity.details.category
+            }
+          }
+        })));
       }
     } catch (err) {
       console.error('Error fetching activities:', err);
@@ -78,7 +86,7 @@ export default function ActivityLog() {
           {activities.map((activity) => (
             <div
               key={activity.id}
-              className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+              className="flex items-center justify-between p-4 bg-gray-50 rounded-lg"
             >
               <div className="flex items-center space-x-4">
                 {activity.action === 'add' ? (
@@ -88,11 +96,14 @@ export default function ActivityLog() {
                 )}
                 <div>
                   <p className="text-sm font-medium text-gray-900">
-                    {activity.action === 'add' ? 'Added' : 'Deleted'} expense: {formatINR(activity.expense.amount)}
+                    {formatINR(activity.expense.amount)}
                   </p>
                   <p className="text-sm text-gray-500">
                     {activity.expense.description || 'No description'} ({activity.expense.category.name})
                   </p>
+                  {/* <p className="text-sm text-gray-500">
+                    {activity.expense.description || 'No description'} ({activity.expense.description})
+                  </p> */}
                 </div>
               </div>
               <p className="text-sm text-gray-500">

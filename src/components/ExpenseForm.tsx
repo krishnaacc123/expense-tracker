@@ -25,7 +25,12 @@ export default function ExpenseForm({ categories }: { categories: Category[] }) 
     }
 
     try {
-      const { error: submitError } = await supabase
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) throw new Error('No authenticated user');
+
+      // First, insert the expense
+      const { data: expense, error: expenseError } = await supabase
         .from('expenses')
         .insert([
           {
@@ -34,9 +39,29 @@ export default function ExpenseForm({ categories }: { categories: Category[] }) 
             category_id: categoryId,
             date
           }
-        ]);
+        ])
+        .select()
+        .single();
 
-      if (submitError) throw submitError;
+      if (expenseError) throw expenseError;
+
+      // Then, create an activity log entry
+      const selectedCategory = categories.find(c => c.id === categoryId);
+      const { error: logError } = await supabase
+        .from('activity_logs')
+        .insert({
+          action: 'add',
+          entity_type: 'expense',
+          entity_id: expense.id,
+          details: {
+            amount: parseFloat(amount),
+            description,
+            category: selectedCategory?.name
+          },
+          user_id: user.id
+        });
+
+      if (logError) throw logError;
 
       navigate('/dashboard');
     } catch (err) {

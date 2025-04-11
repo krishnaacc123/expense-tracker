@@ -46,6 +46,7 @@ export default function ExpenseStats({ categories }: { categories: Category[] })
         amount,
         date,
         category_id,
+        is_deleted,
         categories (name)
       `)
       .gte('date', format(startDate, 'yyyy-MM-dd'))
@@ -56,6 +57,9 @@ export default function ExpenseStats({ categories }: { categories: Category[] })
       const monthlyData: Record<string, MonthlyStats> = {};
 
       data.forEach(expense => {
+        // Skip deleted expenses
+        if (expense.is_deleted) return;
+        
         const monthKey = format(parseISO(expense.date), 'yyyy-MM');
         
         if (!monthlyData[monthKey]) {
@@ -97,46 +101,54 @@ export default function ExpenseStats({ categories }: { categories: Category[] })
       </div>
 
       <div className="p-6">
-        <div className="space-y-4">
-          {monthlyStats.map((stat) => (
-            <div key={stat.month} className="border border-gray-200 rounded-lg">
-              <button
-                onClick={() => toggleMonth(stat.month)}
-                className="w-full flex items-center justify-between p-4 hover:bg-gray-50"
-              >
-                <div className="flex items-center">
-                  {expandedMonths.includes(stat.month) ? (
-                    <ChevronDown className="h-5 w-5 text-gray-400" />
-                  ) : (
-                    <ChevronRight className="h-5 w-5 text-gray-400" />
-                  )}
-                  <span className="ml-2 font-medium">
-                    {format(parseISO(stat.month + '-01'), 'MMMM yyyy')}
+        {monthlyStats.length === 0 ? (
+          <div className="text-center text-gray-500 py-8">
+            No expenses recorded yet
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {monthlyStats.map((stat) => (
+              <div key={stat.month} className="border border-gray-200 rounded-lg">
+                <button
+                  onClick={() => toggleMonth(stat.month)}
+                  className="w-full flex items-center justify-between p-4 hover:bg-gray-50"
+                >
+                  <div className="flex items-center">
+                    {expandedMonths.includes(stat.month) ? (
+                      <ChevronDown className="h-5 w-5 text-gray-400" />
+                    ) : (
+                      <ChevronRight className="h-5 w-5 text-gray-400" />
+                    )}
+                    <span className="ml-2 font-medium">
+                      {format(parseISO(stat.month + '-01'), 'MMMM yyyy')}
+                    </span>
+                  </div>
+                  <span className="font-medium text-gray-900">
+                    {formatINR(stat.total)}
                   </span>
-                </div>
-                <span className="font-medium text-gray-900">
-                  {formatINR(stat.total)}
-                </span>
-              </button>
+                </button>
 
-              {expandedMonths.includes(stat.month) && (
-                <div className="border-t border-gray-200">
-                  {Object.entries(stat.categories).map(([categoryId, data]) => (
-                    <div
-                      key={categoryId}
-                      className="flex justify-between items-center p-4 hover:bg-gray-50"
-                    >
-                      <span className="text-sm text-gray-600">{data.name}</span>
-                      <span className="text-sm font-medium text-gray-900">
-                        {formatINR(data.amount)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+                {expandedMonths.includes(stat.month) && (
+                  <div className="border-t border-gray-200">
+                    {Object.entries(stat.categories)
+                      .sort(([, a], [, b]) => b.amount - a.amount) // Sort categories by amount
+                      .map(([categoryId, data]) => (
+                        <div
+                          key={categoryId}
+                          className="flex justify-between items-center p-4 hover:bg-gray-50"
+                        >
+                          <span className="text-sm text-gray-600">{data.name}</span>
+                          <span className="text-sm font-medium text-gray-900">
+                            {formatINR(data.amount)}
+                          </span>
+                        </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
